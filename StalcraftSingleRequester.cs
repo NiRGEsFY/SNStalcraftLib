@@ -106,9 +106,10 @@ namespace SNStalcraftRequestLib
             string responseBody = await response.Content.ReadAsStringAsync();
             if (string.IsNullOrEmpty(responseBody))
                 return answer;
-            var responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
-            if(responseObject is not null && responseObject.Prices.Count > 0)
+            HistoryItems? responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
+            if (responseObject is not null && responseObject.Prices.Count > 0)
             {
+                responseObject.ItemId = itemId;
                 answer = responseObject.ToSelledItemList();
             }
 
@@ -157,9 +158,10 @@ namespace SNStalcraftRequestLib
                     string responseBody = await response.Content.ReadAsStringAsync();
                     if (string.IsNullOrEmpty(responseBody))
                         return;
-                    var responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
+                    HistoryItems? responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
                     if (responseObject is not null && responseObject.Prices.Count > 0)
                     {
+                        responseObject.ItemId = id;
                         lock (locker)
                         {
                             answer.AddRange(responseObject.ToSelledItemList());
@@ -233,9 +235,10 @@ namespace SNStalcraftRequestLib
                     string responseBody = await response.Content.ReadAsStringAsync();
                     if (string.IsNullOrEmpty(responseBody))
                         return;
-                    var responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
+                    HistoryItems? responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
                     if (responseObject is not null && responseObject.Prices.Count > 0)
                     {
+                        responseObject.ItemId = itemId;
                         lock (locker)
                         {
                             answer.AddRange(responseObject.ToSelledItemList());
