@@ -1,5 +1,4 @@
 ﻿using SNStalcraftRequestLib.Objects.Auction;
-using System.Collections;
 
 namespace SNStalcraftRequestLib.Objects.Comparers
 {

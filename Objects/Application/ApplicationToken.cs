@@ -1,8 +1,9 @@
 ﻿using SNStalcraftRequestLib.DtoObjects.Application;
+using SNStalcraftRequestLib.Interfaces;
 
 namespace SNStalcraftRequestLib.Objects.Application
 {
-    public class ApplicationToken
+    public class ApplicationToken : IToken
     {
         public ApplicationToken(ExboTokenDto token)
         {
@@ -10,6 +11,7 @@ namespace SNStalcraftRequestLib.Objects.Application
             TokenType = token.token_type;
             AccessToken = token.access_token;
         }
+        public bool IsTaked { get; set; }
         public long ExpiresIn { get; set; }
         public string TokenType { get; set; }
         public string AccessToken { get; set; }
