@@ -146,7 +146,7 @@ namespace SNStalcraftRequestLib
                     return new List<SelledItem>();
                 return await TakeHistoryItemsAsync(itemsId.First(), region, limit, offset, additional);
             }
-            IToken? token = _TokenHandler.Take(longTake: true);
+            IToken? token = await _TokenHandler.TakeAsync(longTake: true);
             PreChecking(token);
             int weightAllRequest = itemsId.Count * _weightOneRequest;
 
@@ -223,7 +223,7 @@ namespace SNStalcraftRequestLib
         {
             if (limit <= 200)
                 return await TakeHistoryItemsAsync(itemId,region,limit,offset,additional);
-            IToken? token = _TokenHandler.Take(longTake: true);
+            IToken? token = await _TokenHandler.TakeAsync(longTake: true);
             PreChecking(token);
             //Step reduction for minimalization chaos chance and disruption
             double oneStep = _requestLotsLimit / 10 * 8;
@@ -355,7 +355,7 @@ namespace SNStalcraftRequestLib
                 return await TakeAuctionItemsAsync(itemsId.First(), region, limit, offset, additional);
             }
 
-            IToken? token = _TokenHandler.Take(longTake: true);
+            IToken? token = await _TokenHandler.TakeAsync(longTake: true);
             PreChecking(token);
             int weightAllRequest = itemsId.Count * _weightOneRequest;
 

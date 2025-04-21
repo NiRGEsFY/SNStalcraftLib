@@ -1,5 +1,6 @@
 ﻿using SNStalcraftRequestLib.Interfaces;
 using SNStalcraftRequestLib.Objects.Application;
+using static SNStalcraftRequestLib.TokenHandler;
 
 namespace SNStalcraftRequestLib
 {
@@ -9,6 +10,7 @@ namespace SNStalcraftRequestLib
         public List<IToken> _tokens { get; private set; }
         private TimerCallback resetLimitCallback;
         private Timer resetLimitTimer;
+        
         public TokenHandler() 
         {
             locker = new object();
@@ -48,6 +50,20 @@ namespace SNStalcraftRequestLib
                 return null;
             token.IsTaked = longTake;
             if(!longTake)
+                token.TokenLimit -= requestsWight;
+            return token;
+        
+        }
+        public async Task<IToken> TakeAsync(int requestsWight = 2, bool longTake = false)
+        {
+            IToken? token = null;
+            while (token is null)
+            {
+                token = _tokens.Where(x => x.TokenLimit >= requestsWight && !x.IsTaked).FirstOrDefault();
+                await Task.Delay(100);
+            }
+            token.IsTaked = longTake;
+            if (!longTake)
                 token.TokenLimit -= requestsWight;
             return token;
         }
