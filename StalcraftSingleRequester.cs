@@ -194,13 +194,12 @@ namespace SNStalcraftRequestLib
             {
                 if((token.TokenLimit - _weightOneRequest * 5) <= _weightOneRequest)
                 {
-                    await Task.WhenAll(tasks.Skip(j).Take(i-j));
+                    await Task.WhenAll(tasks.Skip(j).Take(i - j));
                     j = i;
                     _tokensLimitUpdateEventDict[token].Wait();
                 }
                 string currentId = itemsId[i];
                 tasks[i] = Task.Run(() => RequestAsync(currentId));
-                _tokensLimitUpdateEventDict[token].Set();
             }
             _tokensLimitUpdateEventDict.Remove(token);
 
@@ -431,9 +430,6 @@ namespace SNStalcraftRequestLib
         {
             if (string.IsNullOrWhiteSpace(token?.AccessToken))
                 throw new ArgumentNullException(nameof(token.AccessToken));
-
-            if (token.TokenLimit <= 0)
-                throw new Exception($"Token limit is over, {TimeSpan.FromTicks(token.TokenResetTime.Ticks - DateTime.Now.Ticks)} remaining");
         }
         private bool _tokenIsRefreshing = false;
         private void UpdateLimit(HttpHeaders header, IToken token)
