@@ -96,6 +96,14 @@ namespace SNStalcraftRequestLib
                     _tokens.Remove(item);
             }
         }
+        public RequesterStatus HandlerStatus()
+        {
+            RequesterStatus status = new RequesterStatus();
+            status.CountToken = _tokens.Count;
+            status.CountFreeToken = _tokens.Where(x => x.TokenLimit >= 0 && !x.IsTaked).Count();
+            status.SumTokenLimit = _tokens.Where(x => !x.IsTaked).Sum(x => x.TokenLimit);
+            return status;
+        }
 
         public delegate void UpdatedTokens(IEnumerable<IToken> updatedTokens);
         public event UpdatedTokens UpdatedTokenLimitNotify;

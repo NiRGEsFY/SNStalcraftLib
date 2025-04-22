@@ -7,6 +7,8 @@ using SNStalcraftRequestLib.DtoObjects.Auction;
 using System.Net.Http.Headers;
 using SNStalcraftRequestLib.Objects.Comparers;
 using SNStalcraftRequestLib.Interfaces;
+using System.Net.NetworkInformation;
+using System.Numerics;
 
 namespace SNStalcraftRequestLib
 {
@@ -20,6 +22,7 @@ namespace SNStalcraftRequestLib
         public const string _stalcraftUrl = "https://eapi.stalcraft.net/";
         public readonly int _weightOneRequest = 2;
         public readonly int _requestLotsLimit = 200;
+        public RequesterStatus _status;
         private readonly Dictionary<IToken, ManualResetEventSlim> _tokensLimitUpdateEventDict = new Dictionary<IToken, ManualResetEventSlim>();
         /// <summary>
         /// Initialization application token
@@ -35,6 +38,7 @@ namespace SNStalcraftRequestLib
             token.TokenLimit = 400;
             _TokenHandler = new TokenHandler(new List<IToken> { token }, TimeSpan.FromSeconds(5));
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
+            _status = new RequesterStatus();
         }
         public StalcraftSingleRequester(int id, string secret, TimeSpan resetTokenLimitPeriod, string grantType = "client_credentials")
             :this(id, secret, grantType)
@@ -42,6 +46,11 @@ namespace SNStalcraftRequestLib
             var token = ApplicationAuthAsync().GetAwaiter().GetResult();
             token.TokenLimit = 400;
             _TokenHandler = new TokenHandler(new List<IToken> { token }, resetTokenLimitPeriod);
+            _status = new RequesterStatus();
+        }
+        public RequesterStatus Status()
+        {
+            return _status;
         }
         /// <summary>
         /// Reset application token
@@ -103,30 +112,45 @@ namespace SNStalcraftRequestLib
         /// <exception cref="Exception"></exception>
         public async Task<List<SelledItem>> TakeHistoryItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
-            var token = _TokenHandler.Take();
-            PreChecking(token);
-
-            List<SelledItem> answer = new List<SelledItem>();
-            using HttpClient client = new HttpClient();
-            string url = _stalcraftUrl + $"{region}/auction/{itemId}/history?additional={additional}&limit={limit}&offset={offset}";
-
-            client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
-            HttpResponseMessage response = await client.GetAsync(url);
-
-            UpdateLimit(response.Headers, token);
-            response.EnsureSuccessStatusCode();
-
-            string responseBody = await response.Content.ReadAsStringAsync();
-            if (string.IsNullOrEmpty(responseBody))
-                return answer;
-            HistoryItems? responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
-            if (responseObject is not null && responseObject.Prices.Count > 0)
+            _status.RequestInTask++;
+            _status.RequestInProgress++;
+            try
             {
-                responseObject.ItemId = itemId;
-                answer = responseObject.ToSelledItemList();
-            }
+                var token = await _TokenHandler.TakeAsync();
+                PreChecking(token);
 
-            return answer;
+                List<SelledItem> answer = new List<SelledItem>();
+                using HttpClient client = new HttpClient();
+                string url = _stalcraftUrl + $"{region}/auction/{itemId}/history?additional={additional}&limit={limit}&offset={offset}";
+
+                client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
+                HttpResponseMessage response = await client.GetAsync(url);
+
+                UpdateLimit(response.Headers, token);
+                response.EnsureSuccessStatusCode();
+                _status.RequestInProgress--;
+                _status.RequestComplete++;
+                string responseBody = await response.Content.ReadAsStringAsync();
+                if (string.IsNullOrEmpty(responseBody))
+                    return answer;
+                HistoryItems? responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
+                if (responseObject is not null && responseObject.Prices.Count > 0)
+                {
+                    responseObject.ItemId = itemId;
+                    answer = responseObject.ToSelledItemList();
+                }
+
+
+                _status.RequestComplete--;
+                _status.RequestInTask--;
+                return answer;
+            }
+            catch
+            {
+                _status.RequestInProgress--;
+                _status.RequestInTask--;
+                throw;
+            }
         }
         /// <summary>
         /// Multi takedown items from history sells stalcraft
@@ -140,74 +164,117 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<SelledItem>> TakeMultyHistoryItemsAsync(List<string> itemsId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
-            if(itemsId.Count() <= 1)
+            int additionTaskInTask = itemsId.Count;
+            int additionCompleteRequest = 0;
+            _status.RequestInTask += additionTaskInTask;
+            try
             {
-                if (itemsId.Count() <= 0)
-                    return new List<SelledItem>();
-                return await TakeHistoryItemsAsync(itemsId.First(), region, limit, offset, additional);
-            }
-            IToken? token = await _TokenHandler.TakeAsync(longTake: true);
-            PreChecking(token);
-            int weightAllRequest = itemsId.Count * _weightOneRequest;
-
-            List<SelledItem> answer = new List<SelledItem>();
-
-            Task[] tasks = new Task[itemsId.Count];
-
-            object locker = new();
-
-            async Task RequestAsync(string id)
-            {
-                try
+                if (itemsId.Count() <= 1)
                 {
-                    string url = _stalcraftUrl + $"{region}/auction/{id}/history?additional={additional}&limit={limit}&offset={offset}";
-                    using HttpClient client = new HttpClient();
+                    if (itemsId.Count() <= 0)
+                        return new List<SelledItem>();
 
-                    client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
-                    HttpResponseMessage response = await client.GetAsync(url);
-
-                    UpdateLimit(response.Headers,token);
-                    response.EnsureSuccessStatusCode();
-
-                    string responseBody = await response.Content.ReadAsStringAsync();
-                    if (string.IsNullOrEmpty(responseBody))
-                        return;
-                    HistoryItems? responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
-                    if (responseObject is not null && responseObject.Prices.Count > 0)
+                    bool requestIsFine = false;
+                    while (!requestIsFine)
                     {
-                        responseObject.ItemId = id;
-                        lock (locker)
+                        try
                         {
-                            answer.AddRange(responseObject.ToSelledItemList());
+                            return await TakeHistoryItemsAsync(itemsId.First(), region, limit, offset, additional);
+                        }
+                        catch
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10));
                         }
                     }
-                    return;
                 }
-                catch
+                IToken? token = await _TokenHandler.TakeAsync(longTake: true);
+                PreChecking(token);
+                int weightAllRequest = itemsId.Count * _weightOneRequest;
+
+                List<SelledItem> answer = new List<SelledItem>();
+
+                Task[] tasks = new Task[itemsId.Count];
+
+                object locker = new();
+
+                async Task RequestAsync(string id)
                 {
-                    return;
+                    lock(locker)
+                        _status.RequestInProgress++;
+
+                    bool requestIsFine = false;
+
+                    while (!requestIsFine)
+                    {
+                        try
+                        {
+                            string url = _stalcraftUrl + $"{region}/auction/{id}/history?additional={additional}&limit={limit}&offset={offset}";
+                            using HttpClient client = new HttpClient();
+
+                            client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
+                            HttpResponseMessage response = await client.GetAsync(url);
+
+                            UpdateLimit(response.Headers, token);
+                            response.EnsureSuccessStatusCode();
+                            
+                            string responseBody = await response.Content.ReadAsStringAsync();
+                            if (string.IsNullOrEmpty(responseBody))
+                                return;
+                            HistoryItems? responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
+                            if (responseObject is not null && responseObject.Prices.Count > 0)
+                            {
+                                responseObject.ItemId = id;
+                                lock (locker)
+                                {
+                                    answer.AddRange(responseObject.ToSelledItemList());
+                                }
+                            }
+                            requestIsFine = true;
+
+                            lock (locker)
+                            {
+                                _status.RequestComplete++;
+                                additionCompleteRequest++;
+                                _status.RequestInProgress--;
+                            }
+
+                            return;
+                        }
+                        catch
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10));
+                        }
+                    }
+                    _status.RequestInProgress--;
                 }
+                int j = 0;
+                _tokensLimitUpdateEventDict.Add(token, new ManualResetEventSlim(false));
+                for (int i = 0; i < itemsId.Count; i++)
+                {
+                    if ((token.TokenLimit - _weightOneRequest * 5) <= _weightOneRequest)
+                    {
+                        await Task.WhenAll(tasks.Skip(j).Take(i - j));
+                        j = i;
+                        _tokensLimitUpdateEventDict[token].Wait();
+                    }
+                    string currentId = itemsId[i];
+                    tasks[i] = Task.Run(() => RequestAsync(currentId));
+                }
+                _tokensLimitUpdateEventDict.Remove(token);
+
+                Task.WaitAll(tasks);
+
+                token.IsTaked = false;
+                _status.RequestComplete -= additionCompleteRequest;
+                _status.RequestInTask -= additionTaskInTask;
+                return answer;
             }
-            int j = 0;
-            _tokensLimitUpdateEventDict.Add(token, new ManualResetEventSlim(false));
-            for (int i = 0; i < itemsId.Count; i++)
+            catch
             {
-                if((token.TokenLimit - _weightOneRequest * 5) <= _weightOneRequest)
-                {
-                    await Task.WhenAll(tasks.Skip(j).Take(i - j));
-                    j = i;
-                    _tokensLimitUpdateEventDict[token].Wait();
-                }
-                string currentId = itemsId[i];
-                tasks[i] = Task.Run(() => RequestAsync(currentId));
+                _status.RequestComplete -= additionCompleteRequest;
+                _status.RequestInTask -= additionTaskInTask;
+                throw;
             }
-            _tokensLimitUpdateEventDict.Remove(token);
-
-            Task.WaitAll(tasks);
-
-            token.IsTaked = false;
-
-            return answer;
         }
         /// <summary>
         /// Takes more items than in stalcraft api but steal much more token limit
@@ -221,84 +288,143 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<SelledItem>> TakeLongerHistoryItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true, bool exactMode = false)
         {
-            if (limit <= 200)
-                return await TakeHistoryItemsAsync(itemId,region,limit,offset,additional);
-            IToken? token = await _TokenHandler.TakeAsync(longTake: true);
-            PreChecking(token);
-            //Step reduction for minimalization chaos chance and disruption
-            double oneStep = _requestLotsLimit / 10 * 8;
-            int countRequest = (int)Math.Ceiling(limit / oneStep * 1.2);
-            int weightAllRequest = countRequest * _weightOneRequest;
-
-            List<SelledItem> answer = new List<SelledItem>();
-
-            Task[] tasks = new Task[countRequest];
-
-            object locker = new();
-
-            async Task RequestAsync(int stepOffset)
+            int additionTaskInTask = 0;
+            int additionCompleteRequest = 0;
+            try
             {
-                bool requestIsFine = false;
-                while (!requestIsFine)
+                if (limit <= 200)
                 {
-                    try
+                    bool requestIsFine = false;
+                    while (!requestIsFine)
                     {
-                        string url = _stalcraftUrl + $"{region}/auction/{itemId}/history?additional={additional}&limit={_requestLotsLimit}&offset={stepOffset}";
-                        using HttpClient client = new HttpClient();
-
-                        client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
-                        HttpResponseMessage response = await client.GetAsync(url);
-
-                        UpdateLimit(response.Headers, token);
-                        response.EnsureSuccessStatusCode();
-
-                        string responseBody = await response.Content.ReadAsStringAsync();
-                        if (string.IsNullOrEmpty(responseBody))
-                            return;
-                        HistoryItems? responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
-                        if (responseObject is not null && responseObject.Prices.Count > 0)
+                        try
                         {
-                            responseObject.ItemId = itemId;
+                            return await TakeHistoryItemsAsync(itemId, region, limit, offset, additional);
+                        }
+                        catch
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10));
+                        }
+                    }
+                }
+                IToken? token = await _TokenHandler.TakeAsync(longTake: true);
+                PreChecking(token);
+                //Step reduction for minimalization chaos chance and disruption
+                double oneStep = _requestLotsLimit / 10 * 8;
+                int countRequest = (int)Math.Ceiling(limit / oneStep * 1.2);
+                int weightAllRequest = countRequest * _weightOneRequest;
+
+                _status.RequestInTask += countRequest;
+                additionTaskInTask += countRequest;
+
+                List<SelledItem> answer = new List<SelledItem>();
+
+                Task[] tasks = new Task[countRequest];
+
+                object locker = new();
+
+                async Task RequestAsync(int stepOffset)
+                {
+                    lock (locker)
+                        _status.RequestInProgress++;
+
+                    bool requestIsFine = false;
+                    while (!requestIsFine)
+                    {
+                        try
+                        {
+                            string url = _stalcraftUrl + $"{region}/auction/{itemId}/history?additional={additional}&limit={_requestLotsLimit}&offset={stepOffset}";
+                            using HttpClient client = new HttpClient();
+
+                            client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
+                            HttpResponseMessage response = await client.GetAsync(url);
+
+                            UpdateLimit(response.Headers, token);
+                            response.EnsureSuccessStatusCode();
+
+                            string responseBody = await response.Content.ReadAsStringAsync();
+                            if (string.IsNullOrEmpty(responseBody))
+                                return;
+                            HistoryItems? responseObject = JsonConvert.DeserializeObject<HistoryItems>(responseBody);
+                            
+                            //If limit more of total items in history
+                            if(responseObject.Total < limit)
+                            {
+                                lock (locker)
+                                {
+                                    _status.RequestInTask -= countRequest;
+                                    additionTaskInTask -= countRequest;
+
+                                    limit = (int)responseObject.Total;
+                                    countRequest = (int)Math.Ceiling(limit / oneStep * 1.2);
+                                    
+                                    _status.RequestInTask += countRequest;
+                                    additionTaskInTask += countRequest;
+                                }
+                            }
+
+                            if (responseObject is not null && responseObject.Prices.Count > 0)
+                            {
+                                responseObject.ItemId = itemId;
+                                lock (locker)
+                                {
+                                    answer.AddRange(responseObject.ToSelledItemList());
+                                }
+                            }
+                            requestIsFine = true;
+
                             lock (locker)
                             {
-                                answer.AddRange(responseObject.ToSelledItemList());
+                                _status.RequestComplete++;
+                                additionCompleteRequest++;
+                                _status.RequestInProgress--;
                             }
+
+                            return;
                         }
-                        requestIsFine = true;
-                        return;
-                    }
-                    catch
-                    {
-                        await Task.Delay(TimeSpan.FromSeconds(10));
+                        catch
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10));
+                        }
                     }
                 }
-            }
 
-            int j = 0;
-            _tokensLimitUpdateEventDict.Add(token, new ManualResetEventSlim(false));
-            for (int i = 0; i < countRequest; i++)
-            {
-                int border = token is ApplicationToken? _weightOneRequest * 25 : _weightOneRequest * 3;
-                if ((token.TokenLimit - border) <= _weightOneRequest)
+                int j = 0;
+                _tokensLimitUpdateEventDict.Add(token, new ManualResetEventSlim(false));
+                for (int i = 0; i < countRequest; i++)
                 {
-                    await Task.WhenAll(tasks.Skip(j).Take(i - j));
-                    j = i;
-                    _tokensLimitUpdateEventDict[token].Wait();
+                    int border = token is ApplicationToken ? _weightOneRequest * 25 : _weightOneRequest * 3;
+                    if ((token.TokenLimit - border) <= _weightOneRequest)
+                    {
+                        await Task.WhenAll(tasks.Skip(j).Take(i - j));
+                        j = i;
+                        _tokensLimitUpdateEventDict[token].Wait();
+                    }
+                    var stepOffset = (int)oneStep * i + offset;
+                    tasks[i] = Task.Run(() => RequestAsync(stepOffset));
+                    token.TokenLimit -= _weightOneRequest;
                 }
-                var stepOffset = (int)oneStep * i + offset;
-                tasks[i] = Task.Run(() => RequestAsync(stepOffset));
-                token.TokenLimit -= _weightOneRequest;
+                _tokensLimitUpdateEventDict.Remove(token);
+
+                Task.WaitAll(tasks.Where(x => x is not null).ToArray());
+
+                answer = answer.Distinct(SelledItemComparer.Instance).OrderByDescending(x => x.Time).ToList();
+                if (exactMode)
+                    answer = answer.Take(limit).ToList();
+
+                token.IsTaked = false;
+
+                _status.RequestComplete -= additionCompleteRequest;
+                _status.RequestInTask -= additionTaskInTask;
+
+                return answer;
             }
-            _tokensLimitUpdateEventDict.Remove(token);
-
-            Task.WaitAll(tasks);
-
-            answer = answer.Distinct(SelledItemComparer.Instance).OrderByDescending(x => x.Time).ToList();
-            if (exactMode)
-                answer = answer.Take(limit).ToList();
-
-            token.IsTaked = false;
-            return answer;
+            catch
+            {
+                _status.RequestComplete -= additionCompleteRequest;
+                _status.RequestInTask -= additionTaskInTask;
+                throw;
+            }
         }
         /// <summary>
         /// Items from auction stalcraft into the moment request
@@ -313,29 +439,46 @@ namespace SNStalcraftRequestLib
         /// <exception cref="Exception"></exception>
         public async Task<List<AuctionItem>> TakeAuctionItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
-            var token = _TokenHandler.Take();
-            PreChecking(token);
-
-            List<AuctionItem> answer = new List<AuctionItem>();
-            using HttpClient client = new HttpClient();
-            string url = _stalcraftUrl + $"{region}/auction/{itemId}/lots?additional={additional}&limit={limit}&offset={offset}";
-
-            client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
-            HttpResponseMessage response = await client.GetAsync(url);
-
-            UpdateLimit(response.Headers, token);
-            response.EnsureSuccessStatusCode();
-
-            string responseBody = await response.Content.ReadAsStringAsync();
-            if (string.IsNullOrEmpty(responseBody))
-                return answer;
-            var responseObject = JsonConvert.DeserializeObject<LotList>(responseBody);
-            if (responseObject is not null && responseObject?.Lots?.Count > 0)
+            _status.RequestInTask++;
+            _status.RequestInProgress++;
+            try
             {
-                answer = responseObject.ToAuctionItemsList();
-            }
+                var token = await _TokenHandler.TakeAsync();
+                PreChecking(token);
 
-            return answer;
+                List<AuctionItem> answer = new List<AuctionItem>();
+                using HttpClient client = new HttpClient();
+                string url = _stalcraftUrl + $"{region}/auction/{itemId}/lots?additional={additional}&limit={limit}&offset={offset}";
+
+                client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
+                HttpResponseMessage response = await client.GetAsync(url);
+
+                UpdateLimit(response.Headers, token);
+                response.EnsureSuccessStatusCode();
+
+
+                string responseBody = await response.Content.ReadAsStringAsync();
+                if (string.IsNullOrEmpty(responseBody))
+                    return answer;
+                var responseObject = JsonConvert.DeserializeObject<LotList>(responseBody);
+                if (responseObject is not null && responseObject?.Lots?.Count > 0)
+                {
+                    answer = responseObject.ToAuctionItemsList();
+                }
+                _status.RequestComplete++;
+
+                _status.RequestInTask--;
+                _status.RequestInProgress--;
+
+                _status.RequestComplete--;
+                return answer;
+            }
+            catch
+            {
+                _status.RequestInTask--;
+                _status.RequestInProgress--;
+                throw;
+            }
         }
         /// <summary>
         /// Multi taken items from auction stalcraft into the moment start and end method
@@ -348,76 +491,121 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<AuctionItem>> TakeMultyAuctionItemsAsync(List<string> itemsId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
-            if (itemsId.Count() <= 1)
+            int additionTaskInTask = 0;
+            int additionCompleteRequest = 0;
+            try
             {
-                if (itemsId.Count() <= 0)
-                    return new List<AuctionItem>();
-                return await TakeAuctionItemsAsync(itemsId.First(), region, limit, offset, additional);
-            }
-
-            IToken? token = await _TokenHandler.TakeAsync(longTake: true);
-            PreChecking(token);
-            int weightAllRequest = itemsId.Count * _weightOneRequest;
-
-            List<AuctionItem> answer = new List<AuctionItem>();
-
-            Task[] tasks = new Task[itemsId.Count];
-
-            object locker = new();
-
-            async Task RequestAsync(string id)
-            {
-                try
+                if (itemsId.Count() <= 1)
                 {
-                    string url = _stalcraftUrl + $"{region}/auction/{id}/lots?additional={additional}&limit={limit}&offset={offset}";
-                    using HttpClient client = new HttpClient();
+                    if (itemsId.Count() <= 0)
+                        return new List<AuctionItem>();
 
-                    client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
-                    HttpResponseMessage response = await client.GetAsync(url);
-
-                    UpdateLimit(response.Headers, token);
-                    response.EnsureSuccessStatusCode();
-
-                    string responseBody = await response.Content.ReadAsStringAsync();
-                    if (string.IsNullOrEmpty(responseBody))
-                        return;
-                    var responseObject = JsonConvert.DeserializeObject<LotList>(responseBody);
-                    if (responseObject is not null && responseObject?.Lots?.Count > 0)
+                    bool requestIsFine = false;
+                    while (!requestIsFine)
                     {
-                        lock (locker)
+                        try
                         {
-                            answer.AddRange(responseObject.ToAuctionItemsList());
+                            return await TakeAuctionItemsAsync(itemsId.First(), region, limit, offset, additional);
+                        }
+                        catch
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10));
                         }
                     }
-                    return;
                 }
-                catch
-                {
-                    return;
-                }
-            }
 
-            int j = 0;
-            _tokensLimitUpdateEventDict.Add(token, new ManualResetEventSlim(false));
-            for (int i = 0; i < itemsId.Count; i++)
+                IToken? token = await _TokenHandler.TakeAsync(longTake: true);
+                PreChecking(token);
+                int weightAllRequest = itemsId.Count * _weightOneRequest;
+
+                List<AuctionItem> answer = new List<AuctionItem>();
+
+                Task[] tasks = new Task[itemsId.Count];
+
+                object locker = new();
+
+                async Task RequestAsync(string id)
+                {
+                    lock(locker)
+                        _status.RequestInProgress++;
+
+                    bool requestIsFine = false;
+                    while (!requestIsFine)
+                    {
+                        try
+                        {
+                            string url = _stalcraftUrl + $"{region}/auction/{id}/lots?additional={additional}&limit={limit}&offset={offset}";
+                            using HttpClient client = new HttpClient();
+
+                            client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
+                            HttpResponseMessage response = await client.GetAsync(url);
+
+                            UpdateLimit(response.Headers, token);
+                            response.EnsureSuccessStatusCode();
+
+                            string responseBody = await response.Content.ReadAsStringAsync();
+                            if (string.IsNullOrEmpty(responseBody))
+                                return;
+                            var responseObject = JsonConvert.DeserializeObject<LotList>(responseBody);
+                            if (responseObject is not null && responseObject?.Lots?.Count > 0)
+                            {
+                                lock (locker)
+                                {
+                                    answer.AddRange(responseObject.ToAuctionItemsList());
+                                }
+                            }
+
+                            requestIsFine = true;
+
+                            lock(locker)
+                            {
+                                _status.RequestComplete++;
+                                additionCompleteRequest++;
+                                _status.RequestInProgress--;
+                            }
+
+                            return;
+                        }
+                        catch
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(10));
+                        }
+                    }
+
+                }
+
+                int j = 0;
+                _tokensLimitUpdateEventDict.Add(token, new ManualResetEventSlim(false));
+                for (int i = 0; i < itemsId.Count; i++)
+                {
+                    if (token.TokenLimit <= _weightOneRequest)
+                    {
+                        await Task.WhenAll(tasks.Skip(j).Take(i - j));
+                        j = i;
+                        _tokensLimitUpdateEventDict[token].Wait();
+                    }
+                    string currentId = itemsId[i];
+                    tasks[i] = Task.Run(() => RequestAsync(currentId));
+                    token.TokenLimit -= _weightOneRequest;
+                }
+                _tokensLimitUpdateEventDict.Remove(token);
+
+                Task.WaitAll(tasks);
+
+                _status.RequestComplete -= additionCompleteRequest;
+                _status.RequestInTask -= additionTaskInTask;
+                return answer;
+            }
+            catch
             {
-                if (token.TokenLimit <= _weightOneRequest)
-                {
-                    await Task.WhenAll(tasks.Skip(j).Take(i - j));
-                    j = i;
-                    _tokensLimitUpdateEventDict[token].Wait();
-                }
-                string currentId = itemsId[i];
-                tasks[i] = Task.Run(() => RequestAsync(currentId));
-                token.TokenLimit -= _weightOneRequest;
+                _status.RequestComplete -= additionCompleteRequest;
+                _status.RequestInTask -= additionTaskInTask;
+                throw;
             }
-            _tokensLimitUpdateEventDict.Remove(token);
-
-            Task.WaitAll(tasks);
-
-            return answer;
+            
         }
                 
+        
         #region Private methods
         private void OnTokenLimitUpdated(IEnumerable<IToken> updatedTokens)
         {
@@ -425,6 +613,10 @@ namespace SNStalcraftRequestLib
             var intersectKeys = updatedTokens.Intersect(keysIntokensLimitUpdateEventDict);
             foreach (var key in intersectKeys)
                 _tokensLimitUpdateEventDict[key].Set();
+            var status = _TokenHandler.HandlerStatus();
+            _status.SumTokenLimit = status.SumTokenLimit;
+            _status.CountFreeToken = status.CountFreeToken;
+            _status.CountToken = status.CountToken;
         }
         private void PreChecking(IToken? token)
         {
@@ -453,5 +645,6 @@ namespace SNStalcraftRequestLib
         }
 
         #endregion
+
     }
 }
