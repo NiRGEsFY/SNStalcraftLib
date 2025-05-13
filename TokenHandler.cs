@@ -1,12 +1,11 @@
 ﻿using SNStalcraftRequestLib.Interfaces;
 using SNStalcraftRequestLib.Objects.Application;
-using static SNStalcraftRequestLib.TokenHandler;
 
 namespace SNStalcraftRequestLib
 {
     public class TokenHandler
     {
-        private static object? locker;
+        private object? locker;
         public List<IToken> _tokens { get; private set; }
         private TimerCallback resetLimitCallback;
         private Timer resetLimitTimer;

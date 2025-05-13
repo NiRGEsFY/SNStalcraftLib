@@ -7,8 +7,6 @@ using SNStalcraftRequestLib.DtoObjects.Auction;
 using System.Net.Http.Headers;
 using SNStalcraftRequestLib.Objects.Comparers;
 using SNStalcraftRequestLib.Interfaces;
-using System.Net.NetworkInformation;
-using System.Numerics;
 
 namespace SNStalcraftRequestLib
 {
@@ -23,6 +21,7 @@ namespace SNStalcraftRequestLib
         public readonly int _weightOneRequest = 2;
         public readonly int _requestLotsLimit = 200;
         public RequesterStatus _status;
+        public object statusThreadsLocker;
         private readonly Dictionary<IToken, ManualResetEventSlim> _tokensLimitUpdateEventDict = new Dictionary<IToken, ManualResetEventSlim>();
         /// <summary>
         /// Initialization application token
@@ -39,6 +38,7 @@ namespace SNStalcraftRequestLib
             _TokenHandler = new TokenHandler(new List<IToken> { token }, TimeSpan.FromSeconds(5));
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
             _status = new RequesterStatus();
+            statusThreadsLocker = new object();
         }
         public StalcraftSingleRequester(int id, string secret, TimeSpan resetTokenLimitPeriod, string grantType = "client_credentials")
             :this(id, secret, grantType)
@@ -112,8 +112,12 @@ namespace SNStalcraftRequestLib
         /// <exception cref="Exception"></exception>
         public async Task<List<SelledItem>> TakeHistoryItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
-            _status.RequestInTask++;
-            _status.RequestInProgress++;
+            lock(statusThreadsLocker)
+            {
+                _status.RequestInTask++;
+                _status.RequestInProgress++;
+            }
+            
             try
             {
                 var token = await _TokenHandler.TakeAsync();
@@ -128,8 +132,11 @@ namespace SNStalcraftRequestLib
 
                 UpdateLimit(response.Headers, token);
                 response.EnsureSuccessStatusCode();
-                _status.RequestInProgress--;
-                _status.RequestComplete++;
+                lock (statusThreadsLocker)
+                {
+                    _status.RequestInProgress--;
+                    _status.RequestComplete++;
+                }
                 string responseBody = await response.Content.ReadAsStringAsync();
                 if (string.IsNullOrEmpty(responseBody))
                     return answer;
@@ -141,14 +148,18 @@ namespace SNStalcraftRequestLib
                 }
 
 
-                _status.RequestComplete--;
-                _status.RequestInTask--;
+                lock(statusThreadsLocker){
+                    _status.RequestComplete--;
+                    _status.RequestInTask--;
+                }
                 return answer;
             }
             catch
             {
-                _status.RequestInProgress--;
-                _status.RequestInTask--;
+                lock (statusThreadsLocker){
+                    _status.RequestInProgress--;
+                    _status.RequestInTask--;
+                }
                 throw;
             }
         }
@@ -166,7 +177,9 @@ namespace SNStalcraftRequestLib
         {
             int additionTaskInTask = itemsId.Count;
             int additionCompleteRequest = 0;
-            _status.RequestInTask += additionTaskInTask;
+            lock (statusThreadsLocker)
+                _status.RequestInTask += additionTaskInTask;
+
             try
             {
                 if (itemsId.Count() <= 1)
@@ -265,14 +278,20 @@ namespace SNStalcraftRequestLib
                 Task.WaitAll(tasks);
 
                 token.IsTaked = false;
-                _status.RequestComplete -= additionCompleteRequest;
-                _status.RequestInTask -= additionTaskInTask;
+                lock (statusThreadsLocker)
+                {
+                    _status.RequestComplete -= additionCompleteRequest;
+                    _status.RequestInTask -= additionTaskInTask;
+                }
                 return answer;
             }
             catch
             {
-                _status.RequestComplete -= additionCompleteRequest;
-                _status.RequestInTask -= additionTaskInTask;
+                lock (statusThreadsLocker)
+                {
+                    _status.RequestComplete -= additionCompleteRequest;
+                    _status.RequestInTask -= additionTaskInTask;
+                }
                 throw;
             }
         }
@@ -314,7 +333,10 @@ namespace SNStalcraftRequestLib
                 int countRequest = (int)Math.Ceiling(limit / oneStep * 1.2);
                 int weightAllRequest = countRequest * _weightOneRequest;
 
-                _status.RequestInTask += countRequest;
+                lock (statusThreadsLocker)
+                {
+                    _status.RequestInTask += countRequest;
+                }
                 additionTaskInTask += countRequest;
 
                 List<SelledItem> answer = new List<SelledItem>();
@@ -465,18 +487,24 @@ namespace SNStalcraftRequestLib
                 {
                     answer = responseObject.ToAuctionItemsList();
                 }
-                _status.RequestComplete++;
+                lock (statusThreadsLocker)
+                {
+                    _status.RequestComplete++;
 
-                _status.RequestInTask--;
-                _status.RequestInProgress--;
+                    _status.RequestInTask--;
+                    _status.RequestInProgress--;
 
-                _status.RequestComplete--;
+                    _status.RequestComplete--;
+                }
                 return answer;
             }
             catch
             {
-                _status.RequestInTask--;
-                _status.RequestInProgress--;
+                lock (statusThreadsLocker)
+                {
+                    _status.RequestInTask--;
+                    _status.RequestInProgress--;
+                }
                 throw;
             }
         }
@@ -592,20 +620,25 @@ namespace SNStalcraftRequestLib
 
                 Task.WaitAll(tasks);
 
-                _status.RequestComplete -= additionCompleteRequest;
-                _status.RequestInTask -= additionTaskInTask;
+                lock (statusThreadsLocker)
+                {
+                    _status.RequestComplete -= additionCompleteRequest;
+                    _status.RequestInTask -= additionTaskInTask;
+                }
                 return answer;
             }
             catch
             {
-                _status.RequestComplete -= additionCompleteRequest;
-                _status.RequestInTask -= additionTaskInTask;
+                lock (statusThreadsLocker)
+                {
+                    _status.RequestComplete -= additionCompleteRequest;
+                    _status.RequestInTask -= additionTaskInTask;
+                }
                 throw;
             }
             
         }
                 
-        
         #region Private methods
         private void OnTokenLimitUpdated(IEnumerable<IToken> updatedTokens)
         {
@@ -614,9 +647,12 @@ namespace SNStalcraftRequestLib
             foreach (var key in intersectKeys)
                 _tokensLimitUpdateEventDict[key].Set();
             var status = _TokenHandler.HandlerStatus();
-            _status.SumTokenLimit = status.SumTokenLimit;
-            _status.CountFreeToken = status.CountFreeToken;
-            _status.CountToken = status.CountToken;
+            lock(statusThreadsLocker)
+            {
+                _status.SumTokenLimit = status.SumTokenLimit;
+                _status.CountFreeToken = status.CountFreeToken;
+                _status.CountToken = status.CountToken;
+            }
         }
         private void PreChecking(IToken? token)
         {
@@ -624,24 +660,35 @@ namespace SNStalcraftRequestLib
                 throw new ArgumentNullException(nameof(token.AccessToken));
         }
         private bool _tokenIsRefreshing = false;
-        private void UpdateLimit(HttpHeaders header, IToken token)
+        private void UpdateLimit(HttpHeaders? header, IToken token)
         {
-            string remaining = string.Empty;
-            remaining = header.GetValues("x-ratelimit-remaining").FirstOrDefault() ?? string.Empty;
+            try
+            {
+                if (header is null)
+                    return;
 
-            if (string.IsNullOrEmpty(remaining))
-                return;
+                string remaining = string.Empty;
+                remaining = header.GetValues("x-ratelimit-remaining").FirstOrDefault() ?? string.Empty;
 
-            token.TokenLimit = int.Parse(remaining);
-            string resetTime = string.Empty;
-            resetTime = header.GetValues("x-ratelimit-reset").FirstOrDefault() ?? string.Empty;
+                if (string.IsNullOrEmpty(remaining))
+                    return;
 
-            if (string.IsNullOrEmpty(resetTime))
-                return;
+                token.TokenLimit = int.Parse(remaining);
+                string resetTime = string.Empty;
+                resetTime = header.GetValues("x-ratelimit-reset").FirstOrDefault() ?? string.Empty;
 
-            long digitResetTime = long.Parse(resetTime);
-            DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeMilliseconds(digitResetTime);
-            token.TokenResetTime = dateTimeOffset.LocalDateTime;
+                if (string.IsNullOrEmpty(resetTime))
+                    return;
+
+                long digitResetTime = long.Parse(resetTime);
+                DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeMilliseconds(digitResetTime);
+                token.TokenResetTime = dateTimeOffset.LocalDateTime;
+            }
+            catch
+            {
+
+            }
+
         }
 
         #endregion
