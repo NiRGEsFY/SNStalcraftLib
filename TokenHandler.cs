@@ -1,11 +1,12 @@
 ﻿using SNStalcraftRequestLib.Interfaces;
 using SNStalcraftRequestLib.Objects.Application;
+using SNStalcraftRequestLib.Objects.User;
 
 namespace SNStalcraftRequestLib
 {
     public class TokenHandler
     {
-        private object? locker;
+        private object locker;
         public List<IToken> _tokens { get; private set; }
         private TimerCallback resetLimitCallback;
         private Timer resetLimitTimer;
@@ -16,6 +17,13 @@ namespace SNStalcraftRequestLib
             _tokens = new List<IToken>();
             resetLimitCallback = new TimerCallback(UpdateTokensLimits);
             resetLimitTimer = new Timer(resetLimitCallback,null,TimeSpan.FromSeconds(10),TimeSpan.FromSeconds(10));
+        }
+        public TokenHandler(TimeSpan reseterObserverPeriod)
+        {
+            locker = new object();
+            _tokens = new List<IToken>();
+            resetLimitCallback = new TimerCallback(UpdateTokensLimits);
+            resetLimitTimer = new Timer(resetLimitCallback, null, reseterObserverPeriod, reseterObserverPeriod);
         }
         public TokenHandler(List<IToken> tokens, TimeSpan reseterObserverPeriod)
         {
@@ -29,13 +37,10 @@ namespace SNStalcraftRequestLib
             List<IToken> updatedTokens = new List<IToken>();
             lock (locker)
             {
-                var tokens = _tokens.Where(x => x.TokenResetTime <= DateTime.Now);
+                var tokens = _tokens.Where(x => x.TokenResetTime <= DateTime.UtcNow);
                 foreach(var token in tokens)
                 {
-                    if (token is ApplicationToken)
-                        token.TokenLimit = 400;
-                    else
-                        token.TokenLimit = 30;
+                    token.TokenLimit = token.MaxTokenLimit;
                     updatedTokens.Add(token);
                     token.TokenResetTime = token.TokenResetTime.AddMinutes(1);
                 }
@@ -47,23 +52,60 @@ namespace SNStalcraftRequestLib
             var token = _tokens.Where(x => x.TokenLimit >= requestsWight && !x.IsTaked).FirstOrDefault();
             if (token is null)
                 return null;
-            token.IsTaked = longTake;
-            if(!longTake)
-                token.TokenLimit -= requestsWight;
+            if (longTake)
+            {
+                token.IsTaked = longTake;
+                return token;
+            }
+            
+            token.TokenLimit -= requestsWight;
             return token;
-        
         }
+        /// <summary>
+        /// !!!No save method!!! Take all tokens in
+        /// </summary>
+        /// <returns></returns>
+        public List<IToken> GetTokens() =>
+            _tokens;
+        /// <summary>
+        /// !!!No save method!!! Take all tokens in with func
+        /// </summary>
+        /// <returns></returns>
+        public IEnumerable<IToken> GetTokens(Func<IToken, bool> func) =>
+            _tokens.Where(func);
         public async Task<IToken> TakeAsync(int requestsWight = 2, bool longTake = false)
         {
-            IToken? token = null;
-            while (token is null)
+            IToken? token = _tokens.Where(x => x.TokenLimit >= requestsWight).FirstOrDefault();
+            if (token is null)
+                throw new Exception("Token not exist in storage");
+            while (token.IsTaked)
             {
-                token = _tokens.Where(x => x.TokenLimit >= requestsWight && !x.IsTaked).FirstOrDefault();
                 await Task.Delay(100);
             }
-            token.IsTaked = longTake;
-            if (!longTake)
-                token.TokenLimit -= requestsWight;
+            if (longTake)
+            {
+                token.IsTaked = longTake;
+                return token;
+            }
+
+            token.TokenLimit -= requestsWight;
+            return token;
+        }
+        public IToken? TakeUserToken(int userId, bool longTake = false)
+        {
+            var token = _tokens.Where(x => x is UserToken && (x as UserToken).UserId == userId).FirstOrDefault();
+            if (token is null)
+                return null;
+            if (longTake)
+                token.IsTaked = longTake;
+
+            return token;
+        }
+        public async Task<IToken> TakeUserTokenAsync(int userId,bool longTake = false)
+        {
+            IToken? token = _tokens.Where(x => x is UserToken && (x as UserToken).UserId == userId).FirstOrDefault();
+            if(longTake)
+                token.IsTaked = longTake;
             return token;
         }
         public void Add(IToken token)
@@ -98,12 +140,12 @@ namespace SNStalcraftRequestLib
         public RequesterStatus HandlerStatus()
         {
             RequesterStatus status = new RequesterStatus();
-            status.CountToken = _tokens.Count;
-            status.CountFreeToken = _tokens.Where(x => x.TokenLimit >= 0 && !x.IsTaked).Count();
-            status.SumTokenLimit = _tokens.Where(x => !x.IsTaked).Sum(x => x.TokenLimit);
+            List<IToken> tokensSceen = new List<IToken>();
+            status.CountToken = tokensSceen.Count;
+            status.CountFreeToken = tokensSceen.Where(x => x.TokenLimit >= 0 && !x.IsTaked).Count();
+            status.SumTokenLimit = tokensSceen.Where(x => !x.IsTaked).Sum(x => x.TokenLimit);
             return status;
         }
-
         public delegate void UpdatedTokens(IEnumerable<IToken> updatedTokens);
         public event UpdatedTokens UpdatedTokenLimitNotify;
     }

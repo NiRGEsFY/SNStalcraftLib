@@ -1,90 +1,72 @@
 ﻿using Newtonsoft.Json;
-using System.Text;
-using SNStalcraftRequestLib.Objects.Application;
 using SNStalcraftRequestLib.DtoObjects.Application;
-using SNStalcraftRequestLib.Objects.Auction;
 using SNStalcraftRequestLib.DtoObjects.Auction;
-using System.Net.Http.Headers;
-using SNStalcraftRequestLib.Objects.Comparers;
 using SNStalcraftRequestLib.Interfaces;
+using SNStalcraftRequestLib.Objects.Application;
+using SNStalcraftRequestLib.Objects.Auction;
+using SNStalcraftRequestLib.Objects.Comparers;
+using SNStalcraftRequestLib.Objects.User;
 using System.Collections.Concurrent;
+using System.IdentityModel.Tokens.Jwt;
+using System.Net.Http.Headers;
+using System.Text;
 
 namespace SNStalcraftRequestLib
 {
-    public class StalcraftSingleRequester
+    public class StalcraftMultipleRequester
     {
-        public TokenHandler _TokenHandler { get; private set; }
-        public string ApplicationSecret { get; private set; }
-        public int ApplicationId { get; private set; }
-        public string GrantType { get; private set; }
+        private TokenHandler _TokenHandler;
         public const string _exboUrl = "https://exbo.net/";
         public const string _stalcraftUrl = "https://eapi.stalcraft.net/";
         public const int _weightOneRequest = 2;
         public const int _requestLotsLimit = 200;
-        public RequesterStatus _status;
         private readonly ConcurrentDictionary<IToken, ManualResetEventSlim> _tokensLimitUpdateEventDict = new ConcurrentDictionary<IToken, ManualResetEventSlim>();
-        /// <summary>
-        /// Initialization application token
-        /// </summary>
-        /// <param name="id"></param>
-        /// <param name="secret"></param>
-        public StalcraftSingleRequester(int id, string secret, string grantType = "client_credentials") 
+        public StalcraftMultipleRequester(ApplicationToken appToken)
         {
-            ApplicationId = id;
-            ApplicationSecret = secret;
-            GrantType = grantType;
-            var token = ApplicationAuthAsync().GetAwaiter().GetResult();
-            token.TokenLimit = 400;
-            _TokenHandler = new TokenHandler(new List<IToken> { token }, TimeSpan.FromSeconds(5));
+            TimeSpan updateTokensTimer = TimeSpan.FromSeconds(10);
+            _TokenHandler = new TokenHandler(updateTokensTimer);
+            AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult());
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
-            _status = new RequesterStatus();
         }
-        public StalcraftSingleRequester(int id, string secret, TimeSpan resetTokenLimitPeriod, string grantType = "client_credentials")
-            :this(id, secret, grantType)
+        public StalcraftMultipleRequester(ApplicationToken appToken, TimeSpan updateTokensTimer)
         {
-            var token = ApplicationAuthAsync().GetAwaiter().GetResult();
-            token.TokenLimit = 400;
-            _TokenHandler = new TokenHandler(new List<IToken> { token }, resetTokenLimitPeriod);
-            _status = new RequesterStatus();
+            _TokenHandler = new TokenHandler(updateTokensTimer);
+            AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult());
+            _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
-        public RequesterStatus Status()
+        public StalcraftMultipleRequester(ApplicationToken appToken, IEnumerable<UserToken> userTokens)
         {
-            return _status;
+            TimeSpan updateTokensTimer = TimeSpan.FromSeconds(10);
+            _TokenHandler = new TokenHandler(updateTokensTimer);
+            AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult());
+            _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
-        /// <summary>
-        /// Reset application token
-        /// </summary>
-        /// <param name="id"></param>
-        /// <param name="secret"></param>
-        public void ResetApplicationToken(int id, string secret, string grant_type = "client_credentials")
+        public StalcraftMultipleRequester(ApplicationToken appToken, IEnumerable<UserToken> userTokens, TimeSpan updateTokensTimer)
         {
-            ResetApplicationTokenAsync(id, secret, grant_type)
-                .GetAwaiter().GetResult();
+            _TokenHandler = new TokenHandler(updateTokensTimer);
+            AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult());
+            _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
-        /// <summary>
-        /// Async reset application token
-        /// </summary>
-        /// <param name="id"></param>
-        /// <param name="secret"></param>
-        public async Task ResetApplicationTokenAsync(int id, string secret, string grant_type = "client_credentials")
+        
+        private static readonly SocketsHttpHandler _httpHandler = new SocketsHttpHandler
         {
-            ApplicationId = id;
-            ApplicationSecret = secret;
-            var token = _TokenHandler.Take();
-            if(token is not null)
-                _TokenHandler.Remove(token);
+            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+            MaxConnectionsPerServer = 1000,
+            ConnectTimeout = TimeSpan.FromMinutes(2),
+        };
 
-            _TokenHandler.Add(await ApplicationAuthAsync());
-        }
-        private async Task<ApplicationToken> ApplicationAuthAsync()
+
+        #region Auth methods
+
+        private async Task<ApplicationToken> ApplicationAuthAsync(ApplicationToken token)
         {
-            using HttpClient client = new HttpClient();
+            using HttpClient client = new HttpClient(_httpHandler);
             string url = _exboUrl + "oauth/token";
             var requestData = new
             {
-                client_id = ApplicationId,
-                client_secret = ApplicationSecret,
-                grant_type = GrantType
+                client_id = token.TokenId,
+                client_secret = token.TokenSecret,
+                grant_type = "client_credentials"
             };
             string jsonData = JsonConvert.SerializeObject(requestData);
             StringContent content = new StringContent(jsonData, Encoding.UTF8, "application/json");
@@ -95,8 +77,122 @@ namespace SNStalcraftRequestLib
             string responseBody = await response.Content.ReadAsStringAsync();
             ExboTokenDto tokenDto = JsonConvert.DeserializeObject<ExboTokenDto>(responseBody)
                 ?? throw new InvalidOperationException("Failed to deserialize token response");
-            return new ApplicationToken(tokenDto, ApplicationId, ApplicationSecret);
+            return new ApplicationToken(tokenDto, token.TokenId, token.TokenSecret);
         }
+        private async Task<UserToken> RefreshUserToken(UserToken userToken, ApplicationToken appToken)
+        {
+            using HttpClient client = new HttpClient(_httpHandler);
+            string url = _exboUrl + "oauth/token";
+            var requestData = new
+            {
+                client_id = appToken.TokenId,
+                client_secret = appToken.TokenSecret,
+                grant_type = "refresh_token",
+                refresh_token = userToken.RefreshToken
+            };
+
+            string jsonData = JsonConvert.SerializeObject(requestData);
+            StringContent content = new StringContent(jsonData, Encoding.UTF8, "application/json");
+            HttpResponseMessage response = await client.PostAsync(url, content);
+
+            response.EnsureSuccessStatusCode();
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+            ExboTokenDto tokenDto = JsonConvert.DeserializeObject<ExboTokenDto>(responseBody)
+                ?? throw new InvalidOperationException("Failed to deserialize token response");
+
+            var newToken = new UserToken(tokenDto)
+            {
+                TokenOwnerId = appToken.TokenId
+            };
+
+            return new UserToken(tokenDto);
+        }
+        private async Task<UserToken> AuthUserTokenAsync(string accessToken, ApplicationToken appToken, string url)
+        {
+            using HttpClient client = new HttpClient(_httpHandler);
+
+            var requestData = new
+            {
+                client_id = appToken.TokenId,
+                client_secret = appToken.TokenSecret,
+                grant_type = "authorization_code",
+                code = accessToken,
+                redirect_uri = url
+            };
+
+            string jsonData = JsonConvert.SerializeObject(requestData);
+            StringContent content = new StringContent(jsonData, Encoding.UTF8, "application/json");
+            HttpResponseMessage response = await client.PostAsync(url, content);
+
+            response.EnsureSuccessStatusCode();
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+            ExboTokenDto tokenDto = JsonConvert.DeserializeObject<ExboTokenDto>(responseBody)
+                ?? throw new InvalidOperationException("Failed to deserialize token response");
+
+            var newToken = new UserToken(tokenDto)
+            {
+                TokenOwnerId = appToken.TokenId
+            };
+
+            return new UserToken(tokenDto);
+        }
+
+        #endregion
+
+        #region Work with tokens
+
+        /// <summary>
+        /// Addition new token to handler
+        /// </summary>
+        /// <param name="token"></param>
+        public void AddToken(IToken token)
+        {
+            var decoded = new JwtSecurityToken(token.AccessToken);
+            if (token is UserToken)
+            {
+                (token as UserToken).TokenOwnerId = int.Parse(decoded.Audiences.FirstOrDefault());
+                (token as UserToken).UserId = int.Parse(decoded.Claims.FirstOrDefault(x => x.Type.ToString() == "sub").Value);
+            }
+
+            token.TokenExpireTime = decoded.ValidTo;
+
+            _TokenHandler.Add(token);
+        }
+        /// <summary>
+        /// Remove token from handler
+        /// </summary>
+        /// <param name="token"></param>
+        public void RemoveToken(IToken token) =>
+            _TokenHandler.Remove(token);
+        /// <summary>
+        /// Take token with possibillity private this token in handler
+        /// </summary>
+        /// <param name="weightOperation">How much request actually token do x2</param>
+        /// <param name="longTake">Freeze token in handler</param>
+        /// <returns></returns>
+        public IToken? TakeToken(int weightOperation, bool longTake) =>
+            _TokenHandler.Take(weightOperation, longTake);
+        /// <summary>
+        /// Take token with possibillity private this token in handler async
+        /// </summary>
+        /// <param name="weightOperation">How much request actually token do x2</param>
+        /// <param name="longTake">Freeze token in handler</param>
+        /// <returns></returns>
+        public async Task<IToken> TakeTokenAsync(int weightOperation, bool longTake) =>
+            await _TokenHandler.TakeAsync(weightOperation, longTake);
+        /// <summary>
+        /// !!!No safety method (you dont freeze they)!!! You take all tokens in with func
+        /// </summary>
+        /// <param name="func"></param>
+        /// <returns></returns>
+        public IEnumerable<IToken> GetToken(Func<IToken, bool> func) =>
+            _TokenHandler.GetTokens(func);
+
+        #endregion
+
+        #region Auction
         /// <summary>
         /// Takedown items from history sells starcraft
         /// </summary>
@@ -110,14 +206,9 @@ namespace SNStalcraftRequestLib
         /// <exception cref="Exception"></exception>
         public async Task<List<SelledItem>> TakeHistoryItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
-
-            _status.RequestInTask++;
-            _status.RequestInProgress++;
-
             try
             {
                 var token = await _TokenHandler.TakeAsync();
-                PreChecking(token);
 
                 List<SelledItem> answer = new List<SelledItem>();
                 using HttpClient client = new HttpClient();
@@ -126,11 +217,8 @@ namespace SNStalcraftRequestLib
                 client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
                 HttpResponseMessage response = await client.GetAsync(url);
 
-                UpdateLimit(response.Headers, token);
+                var update = UpdateLimit(response.Headers, token);
                 response.EnsureSuccessStatusCode();
-
-                _status.RequestInProgress--;
-                _status.RequestComplete++;
 
                 string responseBody = await response.Content.ReadAsStringAsync();
                 if (string.IsNullOrEmpty(responseBody))
@@ -141,20 +229,11 @@ namespace SNStalcraftRequestLib
                     responseObject.ItemId = itemId;
                     answer = responseObject.ToSelledItemList();
                 }
-
-
-
-                _status.RequestComplete--;
-                _status.RequestInTask--;
-
+                await update;
                 return answer;
             }
             catch
             {
-
-                _status.RequestInProgress--;
-                _status.RequestInTask--;
-
                 throw;
             }
         }
@@ -170,10 +249,6 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<SelledItem>> TakeMultyHistoryItemsAsync(List<string> itemsId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
-            int additionTaskInTask = itemsId.Count;
-            int additionCompleteRequest = 0;
-            _status.RequestInTask += additionTaskInTask;
-
             try
             {
                 if (itemsId.Count() <= 1)
@@ -194,8 +269,7 @@ namespace SNStalcraftRequestLib
                         }
                     }
                 }
-                IToken? token = await _TokenHandler.TakeAsync(longTake: true);
-                PreChecking(token);
+                IToken token = await _TokenHandler.TakeAsync(longTake: true);
                 int weightAllRequest = itemsId.Count * _weightOneRequest;
 
                 List<SelledItem> answer = new List<SelledItem>();
@@ -206,9 +280,6 @@ namespace SNStalcraftRequestLib
 
                 async Task RequestAsync(string id)
                 {
-                    lock(locker)
-                        _status.RequestInProgress++;
-
                     bool requestIsFine = false;
 
                     while (!requestIsFine)
@@ -221,9 +292,9 @@ namespace SNStalcraftRequestLib
                             client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
                             HttpResponseMessage response = await client.GetAsync(url);
 
-                            UpdateLimit(response.Headers, token);
+                            var update = UpdateLimit(response.Headers, token);
                             response.EnsureSuccessStatusCode();
-                            
+
                             string responseBody = await response.Content.ReadAsStringAsync();
                             if (string.IsNullOrEmpty(responseBody))
                                 return;
@@ -237,14 +308,7 @@ namespace SNStalcraftRequestLib
                                 }
                             }
                             requestIsFine = true;
-
-                            lock (locker)
-                            {
-                                _status.RequestComplete++;
-                                additionCompleteRequest++;
-                                _status.RequestInProgress--;
-                            }
-
+                            await update;
                             return;
                         }
                         catch
@@ -252,7 +316,6 @@ namespace SNStalcraftRequestLib
                             await Task.Delay(TimeSpan.FromSeconds(10));
                         }
                     }
-                    _status.RequestInProgress--;
                 }
                 int j = 0;
                 var manual = new ManualResetEventSlim(false);
@@ -269,23 +332,16 @@ namespace SNStalcraftRequestLib
                     tasks[i] = RequestAsync(currentId);
                 }
                 _tokensLimitUpdateEventDict.TryRemove(token, out manual);
-                if(manual is not null)
+                if (manual is not null)
                     manual.Dispose();
                 Task.WaitAll(tasks);
 
                 token.IsTaked = false;
 
-                _status.RequestComplete -= additionCompleteRequest;
-                _status.RequestInTask -= additionTaskInTask;
-
                 return answer;
             }
             catch
             {
-
-                _status.RequestComplete -= additionCompleteRequest;
-                _status.RequestInTask -= additionTaskInTask;
-
                 throw;
             }
         }
@@ -301,8 +357,6 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<SelledItem>> TakeLongerHistoryItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true, bool exactMode = false)
         {
-            int additionTaskInTask = 0;
-            int additionCompleteRequest = 0;
             try
             {
                 if (limit <= 200)
@@ -320,17 +374,11 @@ namespace SNStalcraftRequestLib
                         }
                     }
                 }
-                IToken? token = await _TokenHandler.TakeAsync(longTake: true);
-                PreChecking(token);
+                IToken token = await _TokenHandler.TakeAsync(longTake: true);
                 //Step reduction for minimalization chaos chance and disruption
                 double oneStep = _requestLotsLimit / 10 * 8;
                 int countRequest = (int)Math.Ceiling(limit / oneStep * 1.2);
                 int weightAllRequest = countRequest * _weightOneRequest;
-
-
-                _status.RequestInTask += countRequest;
-
-                additionTaskInTask += countRequest;
 
                 List<SelledItem> answer = new List<SelledItem>();
 
@@ -340,9 +388,6 @@ namespace SNStalcraftRequestLib
 
                 async Task RequestAsync(int stepOffset)
                 {
-                    lock (locker)
-                        _status.RequestInProgress++;
-
                     bool requestIsFine = false;
                     while (!requestIsFine)
                     {
@@ -354,7 +399,7 @@ namespace SNStalcraftRequestLib
                             client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
                             HttpResponseMessage response = await client.GetAsync(url);
 
-                            UpdateLimit(response.Headers, token);
+                            var update = UpdateLimit(response.Headers, token);
                             response.EnsureSuccessStatusCode();
 
                             string responseBody = await response.Content.ReadAsStringAsync();
@@ -370,18 +415,12 @@ namespace SNStalcraftRequestLib
                             }
 
                             //If limit more of total items in history
-                            if(responseObject.Total < limit)
+                            if (responseObject.Total < limit)
                             {
                                 lock (locker)
                                 {
-                                    _status.RequestInTask -= countRequest;
-                                    additionTaskInTask -= countRequest;
-
                                     limit = (int)responseObject.Total;
                                     countRequest = (int)Math.Ceiling(limit / oneStep * 1.2);
-                                    
-                                    _status.RequestInTask += countRequest;
-                                    additionTaskInTask += countRequest;
                                 }
                             }
 
@@ -394,14 +433,7 @@ namespace SNStalcraftRequestLib
                                 }
                             }
                             requestIsFine = true;
-
-                            lock (locker)
-                            {
-                                _status.RequestComplete++;
-                                additionCompleteRequest++;
-                                _status.RequestInProgress--;
-                            }
-
+                            await update;
                             return;
                         }
                         catch
@@ -438,16 +470,10 @@ namespace SNStalcraftRequestLib
                     answer = answer.Take(limit).ToList();
 
                 token.IsTaked = false;
-
-                _status.RequestComplete -= additionCompleteRequest;
-                _status.RequestInTask -= additionTaskInTask;
-
                 return answer;
             }
             catch
             {
-                _status.RequestComplete -= additionCompleteRequest;
-                _status.RequestInTask -= additionTaskInTask;
                 throw;
             }
         }
@@ -464,12 +490,9 @@ namespace SNStalcraftRequestLib
         /// <exception cref="Exception"></exception>
         public async Task<List<AuctionItem>> TakeAuctionItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
-            _status.RequestInTask++;
-            _status.RequestInProgress++;
             try
             {
-                var token = await _TokenHandler.TakeAsync();
-                PreChecking(token);
+                IToken token = await _TokenHandler.TakeAsync();
 
                 List<AuctionItem> answer = new List<AuctionItem>();
                 using HttpClient client = new HttpClient();
@@ -478,7 +501,7 @@ namespace SNStalcraftRequestLib
                 client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
                 HttpResponseMessage response = await client.GetAsync(url);
 
-                UpdateLimit(response.Headers, token);
+                var update = UpdateLimit(response.Headers, token);
                 response.EnsureSuccessStatusCode();
 
 
@@ -490,21 +513,11 @@ namespace SNStalcraftRequestLib
                 {
                     answer = responseObject.ToAuctionItemsList();
                 }
-
-                _status.RequestComplete++;
-
-                _status.RequestInTask--;
-                _status.RequestInProgress--;
-
-                _status.RequestComplete--;
+                await update;
                 return answer;
             }
             catch
             {
-
-                _status.RequestInTask--;
-                _status.RequestInProgress--;
-
                 throw;
             }
         }
@@ -519,8 +532,6 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<AuctionItem>> TakeMultyAuctionItemsAsync(List<string> itemsId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
-            int additionTaskInTask = 0;
-            int additionCompleteRequest = 0;
             try
             {
                 if (itemsId.Count() <= 1)
@@ -542,8 +553,7 @@ namespace SNStalcraftRequestLib
                     }
                 }
 
-                IToken? token = await _TokenHandler.TakeAsync(longTake: true);
-                PreChecking(token);
+                IToken token = await _TokenHandler.TakeAsync(longTake: true);
                 int weightAllRequest = itemsId.Count * _weightOneRequest;
 
                 List<AuctionItem> answer = new List<AuctionItem>();
@@ -554,9 +564,6 @@ namespace SNStalcraftRequestLib
 
                 async Task RequestAsync(string id)
                 {
-                    lock(locker)
-                        _status.RequestInProgress++;
-
                     bool requestIsFine = false;
                     while (!requestIsFine)
                     {
@@ -568,7 +575,7 @@ namespace SNStalcraftRequestLib
                             client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
                             HttpResponseMessage response = await client.GetAsync(url);
 
-                            UpdateLimit(response.Headers, token);
+                            var update = UpdateLimit(response.Headers, token);
                             response.EnsureSuccessStatusCode();
 
                             string responseBody = await response.Content.ReadAsStringAsync();
@@ -584,14 +591,7 @@ namespace SNStalcraftRequestLib
                             }
 
                             requestIsFine = true;
-
-                            lock(locker)
-                            {
-                                _status.RequestComplete++;
-                                additionCompleteRequest++;
-                                _status.RequestInProgress--;
-                            }
-
+                            await update;
                             return;
                         }
                         catch
@@ -622,23 +622,20 @@ namespace SNStalcraftRequestLib
                     manual.Dispose();
                 Task.WaitAll(tasks);
 
-
-                _status.RequestComplete -= additionCompleteRequest;
-                _status.RequestInTask -= additionTaskInTask;
-
                 return answer;
             }
             catch
             {
-                _status.RequestComplete -= additionCompleteRequest;
-                _status.RequestInTask -= additionTaskInTask;
-
                 throw;
             }
-            
+
         }
-                
+
+
+        #endregion
+
         #region Private methods
+
         private void OnTokenLimitUpdated(IEnumerable<IToken> updatedTokens)
         {
             var keysIntokensLimitUpdateEventDict = _tokensLimitUpdateEventDict.Keys.ToList();
@@ -646,49 +643,35 @@ namespace SNStalcraftRequestLib
             foreach (var key in intersectKeys)
                 _tokensLimitUpdateEventDict[key].Set();
             var status = _TokenHandler.HandlerStatus();
-
-            _status.SumTokenLimit = status.SumTokenLimit;
-            _status.CountFreeToken = status.CountFreeToken;
-            _status.CountToken = status.CountToken;
         }
-        private void PreChecking(IToken? token)
+        private async Task<IToken> UpdateLimit(HttpHeaders? header, IToken token)
         {
-            if (string.IsNullOrWhiteSpace(token?.AccessToken))
-                throw new ArgumentNullException(nameof(token.AccessToken));
-        }
-        private bool _tokenIsRefreshing = false;
-        private void UpdateLimit(HttpHeaders? header, IToken token)
-        {
-            try
-            {
-                if (header is null)
-                    return;
+            if (header is null)
+                return token;
 
-                string remaining = string.Empty;
-                remaining = header.GetValues("x-ratelimit-remaining").FirstOrDefault() ?? string.Empty;
+            string remaining = header.GetValues("x-ratelimit-remaining").FirstOrDefault() ?? string.Empty;
 
-                if (string.IsNullOrEmpty(remaining))
-                    return;
+            if (!string.IsNullOrEmpty(remaining))
+                if (int.TryParse(remaining, out int newRemaining))
+                    token.TokenLimit = newRemaining;
 
-                token.TokenLimit = int.Parse(remaining);
-                string resetTime = string.Empty;
-                resetTime = header.GetValues("x-ratelimit-reset").FirstOrDefault() ?? string.Empty;
+            string resetTime = header.GetValues("x-ratelimit-reset").FirstOrDefault() ?? string.Empty;
 
-                if (string.IsNullOrEmpty(resetTime))
-                    return;
+            if (!string.IsNullOrEmpty(resetTime))
+                if (long.TryParse(resetTime, out long newResetTime))
+                {
+                    DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeMilliseconds(newResetTime);
+                    token.TokenResetTime = dateTimeOffset.LocalDateTime;
+                }
 
-                long digitResetTime = long.Parse(resetTime);
-                DateTimeOffset dateTimeOffset = DateTimeOffset.FromUnixTimeMilliseconds(digitResetTime);
-                token.TokenResetTime = dateTimeOffset.UtcDateTime;
-            }
-            catch
-            {
+            string tokenLimit = header.GetValues("X-Ratelimit-Limit").FirstOrDefault() ?? string.Empty;
 
-            }
-
+            if (!string.IsNullOrEmpty(tokenLimit))
+                if (int.TryParse(tokenLimit, out int newTokenLimit))
+                    token.MaxTokenLimit = newTokenLimit;
+            return token;
         }
 
         #endregion
-
     }
 }
