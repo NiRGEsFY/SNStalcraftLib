@@ -110,13 +110,13 @@ namespace SNStalcraftRequestLib
         /// <exception cref="Exception"></exception>
         public async Task<List<SelledItem>> TakeHistoryItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
-
+            IToken? token = null;
             _status.RequestInTask++;
             _status.RequestInProgress++;
 
             try
             {
-                var token = await _TokenHandler.TakeAsync();
+                token = await _TokenHandler.TakeAsync();
                 PreChecking(token);
 
                 List<SelledItem> answer = new List<SelledItem>();
@@ -157,6 +157,11 @@ namespace SNStalcraftRequestLib
 
                 throw;
             }
+            finally
+            {
+                if (token is not null)
+                    token.IsTaked = false;
+            }
         }
         /// <summary>
         /// Multi takedown items from history sells stalcraft
@@ -170,6 +175,8 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<SelledItem>> TakeMultyHistoryItemsAsync(List<string> itemsId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
+            IToken? token = null;
+
             int additionTaskInTask = itemsId.Count;
             int additionCompleteRequest = 0;
             _status.RequestInTask += additionTaskInTask;
@@ -194,7 +201,7 @@ namespace SNStalcraftRequestLib
                         }
                     }
                 }
-                IToken? token = await _TokenHandler.TakeAsync(longTake: true);
+                token = await _TokenHandler.TakeAsync(longTake: true);
                 PreChecking(token);
                 int weightAllRequest = itemsId.Count * _weightOneRequest;
 
@@ -288,6 +295,11 @@ namespace SNStalcraftRequestLib
 
                 throw;
             }
+            finally
+            {
+                if (token is not null)
+                    token.IsTaked = false;
+            }
         }
         /// <summary>
         /// Takes more items than in stalcraft api but steal much more token limit
@@ -301,6 +313,7 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<SelledItem>> TakeLongerHistoryItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true, bool exactMode = false)
         {
+            IToken? token = null;
             int additionTaskInTask = 0;
             int additionCompleteRequest = 0;
             try
@@ -320,7 +333,7 @@ namespace SNStalcraftRequestLib
                         }
                     }
                 }
-                IToken? token = await _TokenHandler.TakeAsync(longTake: true);
+                token = await _TokenHandler.TakeAsync(longTake: true);
                 PreChecking(token);
                 //Step reduction for minimalization chaos chance and disruption
                 double oneStep = _requestLotsLimit / 10 * 8;
@@ -450,6 +463,11 @@ namespace SNStalcraftRequestLib
                 _status.RequestInTask -= additionTaskInTask;
                 throw;
             }
+            finally
+            {
+                if (token is not null)
+                    token.IsTaked = false;
+            }
         }
         /// <summary>
         /// Items from auction stalcraft into the moment request
@@ -464,11 +482,12 @@ namespace SNStalcraftRequestLib
         /// <exception cref="Exception"></exception>
         public async Task<List<AuctionItem>> TakeAuctionItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
+            IToken? token = null;
             _status.RequestInTask++;
             _status.RequestInProgress++;
             try
             {
-                var token = await _TokenHandler.TakeAsync();
+                token = await _TokenHandler.TakeAsync();
                 PreChecking(token);
 
                 List<AuctionItem> answer = new List<AuctionItem>();
@@ -507,6 +526,11 @@ namespace SNStalcraftRequestLib
 
                 throw;
             }
+            finally
+            {
+                if (token is not null)
+                    token.IsTaked = false;
+            }
         }
         /// <summary>
         /// Multi taken items from auction stalcraft into the moment start and end method
@@ -519,6 +543,7 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<AuctionItem>> TakeMultyAuctionItemsAsync(List<string> itemsId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
+            IToken? token = null;
             int additionTaskInTask = 0;
             int additionCompleteRequest = 0;
             try
@@ -542,7 +567,7 @@ namespace SNStalcraftRequestLib
                     }
                 }
 
-                IToken? token = await _TokenHandler.TakeAsync(longTake: true);
+                token = await _TokenHandler.TakeAsync(longTake: true);
                 PreChecking(token);
                 int weightAllRequest = itemsId.Count * _weightOneRequest;
 
@@ -634,6 +659,11 @@ namespace SNStalcraftRequestLib
                 _status.RequestInTask -= additionTaskInTask;
 
                 throw;
+            }
+            finally
+            {
+                if (token is not null)
+                    token.IsTaked = false;
             }
             
         }

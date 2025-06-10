@@ -21,32 +21,35 @@ namespace SNStalcraftRequestLib
         public const int _weightOneRequest = 2;
         public const int _requestLotsLimit = 200;
         private readonly ConcurrentDictionary<IToken, ManualResetEventSlim> _tokensLimitUpdateEventDict = new ConcurrentDictionary<IToken, ManualResetEventSlim>();
+       
+        #region Constructiors
+
         public StalcraftMultipleRequester(ApplicationToken appToken)
         {
             TimeSpan updateTokensTimer = TimeSpan.FromSeconds(10);
             _TokenHandler = new TokenHandler(updateTokensTimer);
-            AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult());
+            AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult()).GetAwaiter().GetResult();
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
         public StalcraftMultipleRequester(IEnumerable<ApplicationToken> appTokens)
         {
             TimeSpan updateTokensTimer = TimeSpan.FromSeconds(10);
             _TokenHandler = new TokenHandler(updateTokensTimer);
-            foreach(var token in appTokens)
-                AddToken(ApplicationAuthAsync(token).GetAwaiter().GetResult());
+            foreach (var token in appTokens)
+                AddToken(ApplicationAuthAsync(token).GetAwaiter().GetResult()).GetAwaiter();
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
         public StalcraftMultipleRequester(ApplicationToken appToken, TimeSpan updateTokensTimer)
         {
             _TokenHandler = new TokenHandler(updateTokensTimer);
-            AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult());
+            AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult()).GetAwaiter();
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
         public StalcraftMultipleRequester(IEnumerable<ApplicationToken> appTokens, TimeSpan updateTokensTimer)
         {
             _TokenHandler = new TokenHandler(updateTokensTimer);
             foreach (var token in appTokens)
-                AddToken(ApplicationAuthAsync(token).GetAwaiter().GetResult());
+                AddToken(ApplicationAuthAsync(token).GetAwaiter().GetResult()).GetAwaiter();
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
         public StalcraftMultipleRequester(ApplicationToken appToken, IEnumerable<UserToken> userTokens)
@@ -62,7 +65,9 @@ namespace SNStalcraftRequestLib
             AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult());
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
-        
+
+        #endregion
+
         private static SocketsHttpHandler httpHandler()
         {
             return new SocketsHttpHandler
@@ -187,7 +192,7 @@ namespace SNStalcraftRequestLib
         /// Addition new token to handler
         /// </summary>
         /// <param name="token"></param>
-        public async void AddToken(IToken token)
+        public async Task AddToken(IToken token)
         {
             var decoded = new JwtSecurityToken(token.AccessToken);
             if (token is UserToken)
@@ -198,7 +203,7 @@ namespace SNStalcraftRequestLib
             }
             else
             {
-                token = await ApplicationAuthAsync(token as ApplicationToken);
+                token = await ApplicationAuthAsync((token as ApplicationToken));
                 token.TokenLimit = applicationTokenMinimalLimit;
             }
 
@@ -237,6 +242,8 @@ namespace SNStalcraftRequestLib
             _TokenHandler.GetTokens(func);
         public IToken? TakeUserToken(int userId, bool longTake = false) =>
             _TokenHandler.TakeUserToken(userId, longTake);
+        public int TokenHandlerCount() =>
+            _TokenHandler._tokens.Count();
 
         #endregion
 
@@ -254,12 +261,14 @@ namespace SNStalcraftRequestLib
         /// <exception cref="Exception"></exception>
         public async Task<List<SelledItem>> TakeHistoryItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
+            IToken? token = null;
             try
             {
-                var token = await _TokenHandler.TakeAsync();
+
+                token = await _TokenHandler.TakeAsync();
 
                 List<SelledItem> answer = new List<SelledItem>();
-                using HttpClient client = new HttpClient();
+                using HttpClient client = new HttpClient(httpHandler());
                 string url = _stalcraftUrl + $"{region}/auction/{itemId}/history?additional={additional}&limit={limit}&offset={offset}";
 
                 client.DefaultRequestHeaders.Add("Authorization", $"{token.TokenType} " + token.AccessToken);
@@ -284,6 +293,11 @@ namespace SNStalcraftRequestLib
             {
                 throw;
             }
+            finally
+            {
+                if(token is not null)
+                   token.IsTaked = false;
+            }
         }
         /// <summary>
         /// Multi takedown items from history sells stalcraft
@@ -297,6 +311,7 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<SelledItem>> TakeMultyHistoryItemsAsync(List<string> itemsId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
+            IToken? token = null;
             try
             {
                 if (itemsId.Count() <= 1)
@@ -317,7 +332,7 @@ namespace SNStalcraftRequestLib
                         }
                     }
                 }
-                IToken token = await _TokenHandler.TakeAsync(longTake: true);
+                token = await _TokenHandler.TakeAsync(longTake: true);
                 int weightAllRequest = itemsId.Count * _weightOneRequest;
 
                 List<SelledItem> answer = new List<SelledItem>();
@@ -384,13 +399,16 @@ namespace SNStalcraftRequestLib
                     manual.Dispose();
                 Task.WaitAll(tasks);
 
-                token.IsTaked = false;
-
                 return answer;
             }
             catch
             {
                 throw;
+            }
+            finally
+            {
+                if (token is not null)
+                    token.IsTaked = false;
             }
         }
         /// <summary>
@@ -405,6 +423,7 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<SelledItem>> TakeLongerHistoryItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true, bool exactMode = false)
         {
+            IToken? token = null;
             try
             {
                 if (limit <= 200)
@@ -422,7 +441,7 @@ namespace SNStalcraftRequestLib
                         }
                     }
                 }
-                IToken token = await _TokenHandler.TakeAsync(longTake: true);
+                token = await _TokenHandler.TakeAsync(longTake: true);
                 //Step reduction for minimalization chaos chance and disruption
                 double oneStep = _requestLotsLimit / 10 * 8;
                 int countRequest = (int)Math.Ceiling(limit / oneStep * 1.2);
@@ -517,12 +536,16 @@ namespace SNStalcraftRequestLib
                 if (exactMode)
                     answer = answer.Take(limit).ToList();
 
-                token.IsTaked = false;
                 return answer;
             }
             catch
             {
                 throw;
+            }
+            finally
+            {
+                if (token is not null)
+                    token.IsTaked = false;
             }
         }
         /// <summary>
@@ -538,9 +561,10 @@ namespace SNStalcraftRequestLib
         /// <exception cref="Exception"></exception>
         public async Task<List<AuctionItem>> TakeAuctionItemsAsync(string itemId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
+            IToken? token = null;
             try
             {
-                IToken token = await _TokenHandler.TakeAsync();
+                token = await _TokenHandler.TakeAsync();
 
                 List<AuctionItem> answer = new List<AuctionItem>();
                 using HttpClient client = new HttpClient();
@@ -568,6 +592,11 @@ namespace SNStalcraftRequestLib
             {
                 throw;
             }
+            finally
+            {
+                if (token is not null)
+                    token.IsTaked = false;
+            }
         }
         /// <summary>
         /// Multi taken items from auction stalcraft into the moment start and end method
@@ -580,6 +609,7 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public async Task<List<AuctionItem>> TakeMultyAuctionItemsAsync(List<string> itemsId, string region = "ru", int limit = 200, int offset = 0, bool additional = true)
         {
+            IToken? token = null;
             try
             {
                 if (itemsId.Count() <= 1)
@@ -601,7 +631,7 @@ namespace SNStalcraftRequestLib
                     }
                 }
 
-                IToken token = await _TokenHandler.TakeAsync(longTake: true);
+                token = await _TokenHandler.TakeAsync(longTake: true);
                 int weightAllRequest = itemsId.Count * _weightOneRequest;
 
                 List<AuctionItem> answer = new List<AuctionItem>();
@@ -666,6 +696,7 @@ namespace SNStalcraftRequestLib
                     token.TokenLimit -= _weightOneRequest;
                 }
                 _tokensLimitUpdateEventDict.Remove(token, out manual);
+                
                 if (manual is not null)
                     manual.Dispose();
                 Task.WaitAll(tasks);
@@ -676,7 +707,11 @@ namespace SNStalcraftRequestLib
             {
                 throw;
             }
-
+            finally
+            {
+                if (token is not null)
+                    token.IsTaked = false;
+            }
         }
 
 

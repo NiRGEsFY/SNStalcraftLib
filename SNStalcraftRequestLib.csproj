@@ -8,7 +8,7 @@
     <Title>Stalcraft API</Title>
     <Authors>lokze</Authors>
     <PackageTags>Stalcraft, StalNote, Stalcrat API</PackageTags>
-    <VersionPrefix>1.0.2</VersionPrefix>
+    <VersionPrefix>1.0.4</VersionPrefix>
   </PropertyGroup>
 
   <ItemGroup>
