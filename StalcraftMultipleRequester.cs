@@ -28,10 +28,25 @@ namespace SNStalcraftRequestLib
             AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult());
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
+        public StalcraftMultipleRequester(IEnumerable<ApplicationToken> appTokens)
+        {
+            TimeSpan updateTokensTimer = TimeSpan.FromSeconds(10);
+            _TokenHandler = new TokenHandler(updateTokensTimer);
+            foreach(var token in appTokens)
+                AddToken(ApplicationAuthAsync(token).GetAwaiter().GetResult());
+            _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
+        }
         public StalcraftMultipleRequester(ApplicationToken appToken, TimeSpan updateTokensTimer)
         {
             _TokenHandler = new TokenHandler(updateTokensTimer);
             AddToken(ApplicationAuthAsync(appToken).GetAwaiter().GetResult());
+            _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
+        }
+        public StalcraftMultipleRequester(IEnumerable<ApplicationToken> appTokens, TimeSpan updateTokensTimer)
+        {
+            _TokenHandler = new TokenHandler(updateTokensTimer);
+            foreach (var token in appTokens)
+                AddToken(ApplicationAuthAsync(token).GetAwaiter().GetResult());
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
         public StalcraftMultipleRequester(ApplicationToken appToken, IEnumerable<UserToken> userTokens)
@@ -81,7 +96,7 @@ namespace SNStalcraftRequestLib
                 ?? throw new InvalidOperationException("Failed to deserialize token response");
             return new ApplicationToken(tokenDto, token.TokenId, token.TokenSecret);
         }
-        private async Task<UserToken> RefreshUserToken(UserToken userToken, ApplicationToken appToken)
+        public async Task<UserToken> RefreshUserToken(UserToken userToken, ApplicationToken appToken)
         {
             using HttpClient client = new HttpClient(httpHandler());
             string url = _exboUrl + "oauth/token";
@@ -110,7 +125,7 @@ namespace SNStalcraftRequestLib
 
             return new UserToken(tokenDto);
         }
-        private async Task<UserToken> AuthUserTokenAsync(string accessToken, ApplicationToken appToken, string url)
+        public async Task<UserToken> AuthUserTokenAsync(string accessToken, ApplicationToken appToken, string url)
         {
             using HttpClient client = new HttpClient(httpHandler());
 
@@ -140,17 +155,39 @@ namespace SNStalcraftRequestLib
 
             return new UserToken(tokenDto);
         }
+        public async Task<ApplicationToken> ApplicationAuthAsync(int tokenId, string tokenSecret)
+        {
+            using HttpClient client = new HttpClient(httpHandler());
+            string url = _exboUrl + "oauth/token";
+            var requestData = new
+            {
+                client_id = tokenId,
+                client_secret = tokenSecret,
+                grant_type = "client_credentials"
+            };
+            string jsonData = JsonConvert.SerializeObject(requestData);
+            StringContent content = new StringContent(jsonData, Encoding.UTF8, "application/json");
+            HttpResponseMessage response = await client.PostAsync(url, content);
+
+            response.EnsureSuccessStatusCode();
+
+            string responseBody = await response.Content.ReadAsStringAsync();
+            ExboTokenDto tokenDto = JsonConvert.DeserializeObject<ExboTokenDto>(responseBody)
+                ?? throw new InvalidOperationException("Failed to deserialize token response");
+            return new ApplicationToken(tokenDto, tokenId, tokenSecret);
+        }
 
         #endregion
 
         #region Work with tokens
+
         private const int userTokenMinimalLimit = 4;
         private const int applicationTokenMinimalLimit = 200;
         /// <summary>
         /// Addition new token to handler
         /// </summary>
         /// <param name="token"></param>
-        public void AddToken(IToken token)
+        public async void AddToken(IToken token)
         {
             var decoded = new JwtSecurityToken(token.AccessToken);
             if (token is UserToken)
@@ -160,7 +197,10 @@ namespace SNStalcraftRequestLib
                 token.TokenLimit = userTokenMinimalLimit;
             }
             else
+            {
+                token = await ApplicationAuthAsync(token as ApplicationToken);
                 token.TokenLimit = applicationTokenMinimalLimit;
+            }
 
             token.TokenExpireTime = decoded.ValidTo;
 
@@ -197,6 +237,7 @@ namespace SNStalcraftRequestLib
             _TokenHandler.GetTokens(func);
         public IToken? TakeUserToken(int userId, bool longTake = false) =>
             _TokenHandler.TakeUserToken(userId, longTake);
+
         #endregion
 
         #region Auction
