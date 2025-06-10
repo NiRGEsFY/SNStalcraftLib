@@ -75,7 +75,7 @@ namespace SNStalcraftRequestLib
             _tokens.Where(func);
         public async Task<IToken> TakeAsync(int requestsWight = 2, bool longTake = false)
         {
-            IToken? token = _tokens.Where(x => x.TokenLimit >= requestsWight).FirstOrDefault();
+            IToken? token = _tokens.FirstOrDefault(x => x.TokenLimit >= requestsWight);
             if (token is null)
                 throw new Exception("Token not exist in storage");
             while (token.IsTaked)
@@ -99,13 +99,6 @@ namespace SNStalcraftRequestLib
             if (longTake)
                 token.IsTaked = longTake;
 
-            return token;
-        }
-        public async Task<IToken> TakeUserTokenAsync(int userId,bool longTake = false)
-        {
-            IToken? token = _tokens.Where(x => x is UserToken && (x as UserToken).UserId == userId).FirstOrDefault();
-            if(longTake)
-                token.IsTaked = longTake;
             return token;
         }
         public void Add(IToken token)

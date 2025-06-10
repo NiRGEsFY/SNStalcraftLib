@@ -48,19 +48,21 @@ namespace SNStalcraftRequestLib
             _TokenHandler.UpdatedTokenLimitNotify += OnTokenLimitUpdated;
         }
         
-        private static readonly SocketsHttpHandler _httpHandler = new SocketsHttpHandler
+        private static SocketsHttpHandler httpHandler()
         {
-            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
-            MaxConnectionsPerServer = 1000,
-            ConnectTimeout = TimeSpan.FromMinutes(2),
-        };
-
-
+            return new SocketsHttpHandler
+            {
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+                MaxConnectionsPerServer = 1000,
+                ConnectTimeout = TimeSpan.FromMinutes(1),
+            };
+        }
+        
         #region Auth methods
 
         private async Task<ApplicationToken> ApplicationAuthAsync(ApplicationToken token)
         {
-            using HttpClient client = new HttpClient(_httpHandler);
+            using HttpClient client = new HttpClient(httpHandler());
             string url = _exboUrl + "oauth/token";
             var requestData = new
             {
@@ -81,7 +83,7 @@ namespace SNStalcraftRequestLib
         }
         private async Task<UserToken> RefreshUserToken(UserToken userToken, ApplicationToken appToken)
         {
-            using HttpClient client = new HttpClient(_httpHandler);
+            using HttpClient client = new HttpClient(httpHandler());
             string url = _exboUrl + "oauth/token";
             var requestData = new
             {
@@ -110,7 +112,7 @@ namespace SNStalcraftRequestLib
         }
         private async Task<UserToken> AuthUserTokenAsync(string accessToken, ApplicationToken appToken, string url)
         {
-            using HttpClient client = new HttpClient(_httpHandler);
+            using HttpClient client = new HttpClient(httpHandler());
 
             var requestData = new
             {
@@ -142,7 +144,8 @@ namespace SNStalcraftRequestLib
         #endregion
 
         #region Work with tokens
-
+        private const int userTokenMinimalLimit = 4;
+        private const int applicationTokenMinimalLimit = 200;
         /// <summary>
         /// Addition new token to handler
         /// </summary>
@@ -154,7 +157,10 @@ namespace SNStalcraftRequestLib
             {
                 (token as UserToken).TokenOwnerId = int.Parse(decoded.Audiences.FirstOrDefault());
                 (token as UserToken).UserId = int.Parse(decoded.Claims.FirstOrDefault(x => x.Type.ToString() == "sub").Value);
+                token.TokenLimit = userTokenMinimalLimit;
             }
+            else
+                token.TokenLimit = applicationTokenMinimalLimit;
 
             token.TokenExpireTime = decoded.ValidTo;
 
@@ -189,7 +195,8 @@ namespace SNStalcraftRequestLib
         /// <returns></returns>
         public IEnumerable<IToken> GetToken(Func<IToken, bool> func) =>
             _TokenHandler.GetTokens(func);
-
+        public IToken? TakeUserToken(int userId, bool longTake = false) =>
+            _TokenHandler.TakeUserToken(userId, longTake);
         #endregion
 
         #region Auction
